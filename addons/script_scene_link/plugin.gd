@@ -3,6 +3,7 @@ extends EditorPlugin
 
 const SceneIndex = preload("res://addons/script_scene_link/scene_index.gd")
 const _DOMINANT_SCRIPT_SETTING := "text_editor/behavior/files/open_dominant_script_on_scene_change"
+const _LOOKUP_SYMBOL_SHORTCUT := "script_text_editor/goto_symbol"
 const _MAIN_SCREEN_NAMES: PackedStringArray = ["2D", "3D", "Script", "Game", "AssetLib"]
 const _RECENT_LIMIT := 64
 
@@ -14,6 +15,7 @@ var _syncing_from_script := false
 var _rebuild_queued := false
 var _bindings: Array[Dictionary] = []
 var _history_shortcuts: Array[Shortcut] = []
+var _lookup_shortcut: Shortcut
 var _script_path_last_frame := ""
 
 
@@ -40,6 +42,7 @@ func _exit_tree() -> void:
 	_suppress_depth = 0
 	_rebuild_queued = false
 	_history_shortcuts.clear()
+	_lookup_shortcut = null
 	set_process(false)
 	set_process_input(false)
 
@@ -73,8 +76,11 @@ func _connect_editor_signals() -> void:
 		_connect_filesystem_activation(dock)
 	var script_editor := interface.get_script_editor()
 	if script_editor:
+		_lookup_shortcut = interface.get_editor_settings().get_shortcut(_LOOKUP_SYMBOL_SHORTCUT)
 		_connect_history_buttons(script_editor)
 		_connect_script_files_panel(script_editor)
+		_bind_signal(script_editor, "editor_script_changed", _on_editor_script_changed)
+		_connect_lookup_menus(script_editor)
 
 
 func _connect_filesystem_activation(node: Node) -> void:
@@ -143,6 +149,38 @@ func _script_list_in_box(box: VBoxContainer) -> ItemList:
 	if has_filter and list:
 		return list
 	return null
+
+
+func _on_editor_script_changed(_script: Script) -> void:
+	var script_editor := get_editor_interface().get_script_editor()
+	if script_editor:
+		_connect_lookup_menus.call_deferred(script_editor)
+
+
+func _connect_lookup_menus(node: Node) -> void:
+	if node is PopupMenu:
+		_bind_signal(node, "id_pressed", _on_lookup_menu_id_pressed.bind(node))
+	for child in node.get_children():
+		_connect_lookup_menus(child)
+
+
+func _on_lookup_menu_id_pressed(id: int, menu: PopupMenu) -> void:
+	if not _is_lookup_item(menu, id):
+		return
+	var script_editor := get_editor_interface().get_script_editor()
+	if script_editor == null or not script_editor.is_visible_in_tree():
+		return
+	_sync_if_script_changed.call_deferred(_script_path_last_frame)
+
+
+func _is_lookup_item(menu: PopupMenu, id: int) -> bool:
+	if _lookup_shortcut == null:
+		return false
+	for index in menu.item_count:
+		if menu.get_item_id(index) != id:
+			continue
+		return menu.get_item_shortcut(index) == _lookup_shortcut
+	return false
 
 
 func _bind_signal(source: Object, signal_name: String, callback: Callable, flags: int = 0) -> void:
@@ -289,6 +327,11 @@ func _on_history_pressed() -> void:
 
 
 func _input(event: InputEvent) -> void:
+	if _is_lookup_shortcut_event(event):
+		var script_editor := get_editor_interface().get_script_editor()
+		if script_editor and script_editor.is_visible_in_tree():
+			_sync_if_script_changed.call_deferred(_script_path_last_frame)
+		return
 	if not _is_history_navigation_event(event):
 		return
 	var script_editor := get_editor_interface().get_script_editor()
@@ -307,6 +350,12 @@ func _sync_if_script_changed(previous_path: String) -> void:
 	if script == null or not script is GDScript or script.resource_path == previous_path:
 		return
 	_sync_scene_for_script(script)
+
+
+func _is_lookup_shortcut_event(event: InputEvent) -> bool:
+	if _lookup_shortcut == null or not event.is_pressed() or event.is_echo():
+		return false
+	return _lookup_shortcut.matches_event(event)
 
 
 func _is_history_navigation_event(event: InputEvent) -> bool:
